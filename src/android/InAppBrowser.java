@@ -19,12 +19,18 @@
 package org.apache.cordova.inappbrowser;
 
 import android.annotation.SuppressLint;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
+import android.os.Parcelable;
 import android.provider.Browser;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.drawable.Drawable;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffColorFilter;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
@@ -41,15 +47,13 @@ import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.webkit.CookieManager;
 import android.webkit.CookieSyncManager;
-import android.webkit.DownloadListener;
 import android.webkit.HttpAuthHandler;
+import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-//import android.webkit.WebMessage;
-//import android.webkit.WebMessagePort;
 import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.ImageView;
@@ -59,7 +63,6 @@ import android.widget.TextView;
 
 import org.apache.cordova.CallbackContext;
 import org.apache.cordova.Config;
-import org.apache.cordova.ConfigXmlParser;
 import org.apache.cordova.CordovaArgs;
 import org.apache.cordova.CordovaHttpAuthHandler;
 import org.apache.cordova.CordovaPlugin;
@@ -67,24 +70,20 @@ import org.apache.cordova.CordovaWebView;
 import org.apache.cordova.LOG;
 import org.apache.cordova.PluginManager;
 import org.apache.cordova.PluginResult;
-import org.apache.cordova.Whitelist;
-import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
-import org.xmlpull.v1.XmlPullParser;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.Arrays;
-//import java.util.ArrayList;
 import java.util.List;
 import java.util.HashMap;
 import java.util.StringTokenizer;
 
-
 @SuppressLint("SetJavaScriptEnabled")
-public class InAppBrowser extends CordovaPlugin implements DownloadListener {
+public class InAppBrowser extends CordovaPlugin {
 
     private static final String NULL = "null";
     protected static final String LOG_TAG = "InAppBrowser";
@@ -97,6 +96,7 @@ public class InAppBrowser extends CordovaPlugin implements DownloadListener {
     private static final String LOAD_START_EVENT = "loadstart";
     private static final String LOAD_STOP_EVENT = "loadstop";
     private static final String LOAD_ERROR_EVENT = "loaderror";
+    private static final String MESSAGE_EVENT = "message";
     private static final String CLEAR_ALL_CACHE = "clearcache";
     private static final String CLEAR_SESSION_CACHE = "clearsessioncache";
     private static final String HARDWARE_BACK_BUTTON = "hardwareback";
@@ -112,11 +112,7 @@ public class InAppBrowser extends CordovaPlugin implements DownloadListener {
     private static final String HIDE_URL = "hideurlbar";
     private static final String FOOTER = "footer";
     private static final String FOOTER_COLOR = "footercolor";
-    private static final String ON_WEB_MESSAGE = "onwebmessage";
-    private static final String ON_WEB_MESSAGE_V2 = "onwebmessageV2";
-    private static final String ON_DOWNLOAD_HANDLER = "downloadhandler";
-    private static final String EXTERNAL_URI = "externaluri";
-    private static final String SCHEME_API = "cencoapi://";
+    private static final String BEFORELOAD = "beforeload";
 
     private static final List customizableOptions = Arrays.asList(CLOSE_BUTTON_CAPTION, TOOLBAR_COLOR, NAVIGATION_COLOR, CLOSE_BUTTON_COLOR, FOOTER_COLOR);
 
@@ -145,46 +141,8 @@ public class InAppBrowser extends CordovaPlugin implements DownloadListener {
     private boolean hideUrlBar = false;
     private boolean showFooter = false;
     private String footerColor = "";
+    private boolean useBeforeload = false;
     private String[] allowedSchemes;
-
-//    private WebMessagePort msgPortCordova = null;
-//    private WebMessagePort msgPortWebview = null;
-//    private List<String> msgPendingToSend = new ArrayList<String>();
-//    private List<String> msgPendindToDispatch = new ArrayList<String>();
-//    private Runnable msgThreadDispatcher = null;
-
-    private Whitelist allowedNavigations;
-    private boolean cencosudBehaviour = true;
-
-    @Override
-    public void pluginInitialize() {
-        if (allowedNavigations == null) {
-            allowedNavigations = new Whitelist();
-            new InAppBrowser.CustomConfigXmlParser().parse(webView.getContext());
-        }
-    }
-    private class CustomConfigXmlParser extends ConfigXmlParser {
-        @Override
-        public void handleStartTag(XmlPullParser xml) {
-            String strNode = xml.getName();
-            if (strNode.equals("content")) {
-                String startPage = xml.getAttributeValue(null, "src");
-                allowedNavigations.addWhiteListEntry(startPage, false);
-            } else if (strNode.equals("allow-navigation")) {
-                String origin = xml.getAttributeValue(null, "href");
-                if ("*".equals(origin)) {
-                    allowedNavigations.addWhiteListEntry("http://*/*", false);
-                    allowedNavigations.addWhiteListEntry("https://*/*", false);
-                    allowedNavigations.addWhiteListEntry("data:*", false);
-                } else {
-                    allowedNavigations.addWhiteListEntry(origin, false);
-                }
-            }
-        }
-        @Override
-        public void handleEndTag(XmlPullParser xml) {
-        }
-    }
 
     /**
      * Executes the request and returns PluginResult.
@@ -196,7 +154,7 @@ public class InAppBrowser extends CordovaPlugin implements DownloadListener {
      */
     public boolean execute(String action, CordovaArgs args, final CallbackContext callbackContext) throws JSONException {
         if (action.equals("open")) {
-            // this.callbackContext = callbackContext;
+            this.callbackContext = callbackContext;
             final String url = args.getString(0);
             String t = args.optString(1);
             if (t == null || t.equals("") || t.equals(NULL)) {
@@ -204,7 +162,6 @@ public class InAppBrowser extends CordovaPlugin implements DownloadListener {
             }
             final String target = t;
             final HashMap<String, String> features = parseFeature(args.optString(2));
-            final Integer closeAtMinHistory = args.optInt(3);
 
             LOG.d(LOG_TAG, "target = " + target);
 
@@ -281,7 +238,6 @@ public class InAppBrowser extends CordovaPlugin implements DownloadListener {
                     // BLANK - or anything else
                     else {
                         LOG.d(LOG_TAG, "in blank");
-                        InAppBrowser.this.callbackContext = callbackContext;
                         result = showWebPage(url, features);
                     }
 
@@ -293,6 +249,20 @@ public class InAppBrowser extends CordovaPlugin implements DownloadListener {
         }
         else if (action.equals("close")) {
             closeDialog();
+        }
+        else if (action.equals("loadAfterBeforeload")) {
+            if (!useBeforeload) {
+              LOG.e(LOG_TAG, "unexpected loadAfterBeforeload called without feature beforeload=yes");
+            }
+            final String url = args.getString(0);
+            this.cordova.getActivity().runOnUiThread(new Runnable() {
+                @SuppressLint("NewApi")
+                @Override
+                public void run() {
+                    ((InAppBrowserClient)inAppWebView.getWebViewClient()).waitForBeforeload = false;
+                    inAppWebView.loadUrl(url);
+                }
+            });
         }
         else if (action.equals("injectScriptCode")) {
             String jsWrapper = null;
@@ -349,168 +319,8 @@ public class InAppBrowser extends CordovaPlugin implements DownloadListener {
             PluginResult pluginResult = new PluginResult(PluginResult.Status.OK);
             pluginResult.setKeepCallback(true);
             this.callbackContext.sendPluginResult(pluginResult);
-//        } else if (action.equals("createChannel")) {
-//            final CallbackContext actionCallbackContext = callbackContext;
-//            final String customTag = args.getString(0);
-//            this.cordova.getActivity().runOnUiThread(new Runnable() {
-//                @SuppressLint("NewApi")
-//                @Override
-//                public void run() {
-//                    WebMessagePort msgPorts[] = inAppWebView.createWebMessageChannel();
-//                    if (msgPorts == null || msgPorts.length != 2) {
-//                        JSONObject obj = new JSONObject();
-//                        try {
-//                            obj.put("status", 1);
-//                            obj.put("description", "Message channel can't retrieve ports");
-//                        } catch (JSONException e) {
-//                            e.printStackTrace();
-//                        }
-//                        actionCallbackContext.error(obj);
-//
-//                    } else {
-//                        msgPortCordova = msgPorts[0];
-//                        msgPortWebview = msgPorts[1];
-//                        msgPortCordova.setWebMessageCallback(new android.webkit.WebMessagePort.WebMessageCallback() {
-//                            @Override
-//                            public void onMessage(WebMessagePort port, WebMessage message) {
-//                                if (message.getData() != null) {
-//                                    String msg = message.getData();
-//                                    synchronized (msgPendindToDispatch) {
-//                                        msgPendindToDispatch.add(msg);
-//                                    }
-//
-//                                    if (msgThreadDispatcher != null) {
-//                                        InAppBrowser.this.cordova.getActivity().runOnUiThread(msgThreadDispatcher);
-//                                    }
-//                                }
-//                            }
-//                        });
-//
-//                        WebMessage message = new WebMessage("inAppBrowserNativeAPIChannelInitialization", new WebMessagePort[]{msgPortWebview});
-//                        inAppWebView.postWebMessage(message, Uri.EMPTY);
-//
-//                        msgThreadDispatcher = new Runnable() {
-//                            private String tag = customTag;
-//
-//                            @Override
-//                            public void run() {
-//
-//                                synchronized (msgThreadDispatcher) {
-//                                    List<String> msgToSend = new ArrayList();
-//                                    List<String> msgToDispatch = new ArrayList();
-//                                    synchronized (msgPendingToSend) {
-//                                        msgToSend.addAll(msgPendingToSend);
-//                                        msgPendingToSend.clear();
-//                                    }
-//
-//                                    //send messages to webview page
-//                                    while (!msgToSend.isEmpty()) {
-//                                        String msg = msgToSend.remove(0);
-//                                        msgPortCordova.postMessage(new WebMessage(msg));
-//                                    }
-//
-//
-//                                    synchronized (msgPendindToDispatch) {
-//                                        msgToDispatch.addAll(msgPendindToDispatch);
-//                                        msgPendindToDispatch.clear();
-//                                    }
-//
-//                                    //send messages to cordova app
-//                                    while (!msgToDispatch.isEmpty()) {
-//                                        String msg = msgToDispatch.remove(0);
-//                                        try {
-//                                            JSONObject obj = new JSONObject();
-//                                            obj.put("type", ON_WEB_MESSAGE);
-//                                            obj.put("tag", tag);
-//                                            obj.put("msg", msg);
-//                                            sendUpdate(obj, true);
-//                                        } catch (JSONException ex) {
-//                                            LOG.d(LOG_TAG, "Should never happen");
-//                                        }
-//
-//                                    }
-//
-//                                }
-//                            }
-//                        };
-//
-//                        actionCallbackContext.success();
-//                        InAppBrowser.this.cordova.getActivity().runOnUiThread(msgThreadDispatcher);
-//                    }
-//                }
-//            });
-//        } else if (action.equals("postMessage")) {
-//            if (args.getString(0) != null) {
-//                final String jsonMsg = args.getString(0);
-//                //   JSONObject jsonMsg = new JSONObject(msg);
-//                //   String id = jsonMsg.getString("id");
-//                //   String operation = jsonMsg.getString("operation");
-//
-//                cordova.getThreadPool().execute(new Runnable() {
-//                    @SuppressLint("NewApi")
-//                    @Override
-//                    public void run() {
-//                        synchronized(msgPendingToSend) {
-//                            msgPendingToSend.add(jsonMsg);
-//                        }
-//                        JSONObject obj = new JSONObject();
-//                        try {
-//                            obj.put("status", 0);
-//                            obj.put("description", "Message queue to send");
-//                        } catch (JSONException e) {
-//                            e.printStackTrace();
-//                        }
-//                        if (msgThreadDispatcher != null) {
-//                            InAppBrowser.this.cordova.getActivity().runOnUiThread(msgThreadDispatcher);
-//                        } else {
-//                            try {
-//                                obj.put("status", 1);
-//                                obj.put("description", "Message queue to send (whitout channel)");
-//                            } catch (JSONException e) {
-//                                e.printStackTrace();
-//                            }
-//                        }
-//                        callbackContext.success(obj);
-//                    }
-//                });
-//            }
-        } else if (action.equals("createChannelV2")) {
-            final CallbackContext actionCallbackContext = callbackContext;
-            this.cordova.getActivity().runOnUiThread(
-                new Runnable() {
-                     @SuppressLint("NewApi")
-                     @Override
-                     public void run() {
-                         String jsCall = "window.internapApi.callNativeApi();";
-                         inAppWebView.evaluateJavascript(jsCall, value -> {
-                             actionCallbackContext.success();
-                         });
-                     }
-                });
-        } else if (action.equals("postMessageV2")) {
-            if (args.getString(0) != null) {
-                final CallbackContext actionCallbackContext = callbackContext;
-                final String jsonMsg = args.getString(0);
-                this.cordova.getActivity().runOnUiThread(
-                    new Runnable() {
-                        @SuppressLint("NewApi")
-                        @Override
-                        public void run() {
-                            String jsCall = "window.internapApi.processMessageResponse(" + jsonMsg + ");";
-                            inAppWebView.evaluateJavascript(jsCall, value -> {
-                                JSONObject obj = new JSONObject();
-                                try {
-                                    obj.put("status", value!=null?value:0);
-                                    obj.put("description", "Message queue to send");
-                                } catch (JSONException e) {
-                                    e.printStackTrace();
-                                }
-                                actionCallbackContext.success(obj);
-                            });
-                        }
-                    });
-            }
-        } else {
+        }
+        else {
             return false;
         }
         return true;
@@ -645,12 +455,53 @@ public class InAppBrowser extends CordovaPlugin implements DownloadListener {
                 intent.setData(uri);
             }
             intent.putExtra(Browser.EXTRA_APPLICATION_ID, cordova.getActivity().getPackageName());
-            this.cordova.getActivity().startActivity(intent);
+            // CB-10795: Avoid circular loops by preventing it from opening in the current app
+            this.openExternalExcludeCurrentApp(intent);
             return "";
             // not catching FileUriExposedException explicitly because buildtools<24 doesn't know about it
         } catch (java.lang.RuntimeException e) {
             LOG.d(LOG_TAG, "InAppBrowser: Error loading url "+url+":"+ e.toString());
             return e.toString();
+        }
+    }
+
+    /**
+     * Opens the intent, providing a chooser that excludes the current app to avoid
+     * circular loops.
+     */
+    private void openExternalExcludeCurrentApp(Intent intent) {
+        String currentPackage = cordova.getActivity().getPackageName();
+        boolean hasCurrentPackage = false;
+
+        PackageManager pm = cordova.getActivity().getPackageManager();
+        List<ResolveInfo> activities = pm.queryIntentActivities(intent, 0);
+        ArrayList<Intent> targetIntents = new ArrayList<Intent>();
+
+        for (ResolveInfo ri : activities) {
+            if (!currentPackage.equals(ri.activityInfo.packageName)) {
+                Intent targetIntent = (Intent)intent.clone();
+                targetIntent.setPackage(ri.activityInfo.packageName);
+                targetIntents.add(targetIntent);
+            }
+            else {
+                hasCurrentPackage = true;
+            }
+        }
+
+        // If the current app package isn't a target for this URL, then use
+        // the normal launch behavior
+        if (hasCurrentPackage == false || targetIntents.size() == 0) {
+            this.cordova.getActivity().startActivity(intent);
+        }
+        // If there's only one possible intent, launch it directly
+        else if (targetIntents.size() == 1) {
+            this.cordova.getActivity().startActivity(targetIntents.get(0));
+        }
+        // Otherwise, show a custom chooser without the current app listed
+        else if (targetIntents.size() > 0) {
+            Intent chooser = Intent.createChooser(targetIntents.remove(targetIntents.size()-1), null);
+            chooser.putExtra(Intent.EXTRA_INITIAL_INTENTS, targetIntents.toArray(new Parcelable[] {}));
+            this.cordova.getActivity().startActivity(chooser);
         }
     }
 
@@ -707,19 +558,6 @@ public class InAppBrowser extends CordovaPlugin implements DownloadListener {
      * @return boolean
      */
     public boolean canGoBack() {
-        if (cencosudBehaviour) {
-            String url = this.inAppWebView.getUrl();
-            Uri uri = Uri.parse(url);
-            String pParam = uri.getQueryParameter("p");
-            if (pParam != null) {
-                String values[] = pParam.split(":");
-                if (values.length > 1 /*&& "128".equalsIgnoreCase(values[0])*/) {
-                    if ("1".equalsIgnoreCase(values[1]) || "101".equalsIgnoreCase(values[1])) {
-                        return false;
-                    }
-                }
-            }
-        }
         return this.inAppWebView.canGoBack();
     }
 
@@ -853,6 +691,10 @@ public class InAppBrowser extends CordovaPlugin implements DownloadListener {
             String footerColorSet = features.get(FOOTER_COLOR);
             if (footerColorSet != null) {
                 footerColor = footerColorSet;
+            }
+            String beforeload = features.get(BEFORELOAD);
+            if (beforeload != null) {
+                useBeforeload = beforeload.equals("yes") ? true : false;
             }
         }
 
@@ -1104,7 +946,7 @@ public class InAppBrowser extends CordovaPlugin implements DownloadListener {
                     }
 
                 });
-                WebViewClient client = new InAppBrowserClient(thatWebView, edittext);
+                WebViewClient client = new InAppBrowserClient(thatWebView, edittext, useBeforeload);
                 inAppWebView.setWebViewClient(client);
                 WebSettings settings = inAppWebView.getSettings();
                 settings.setJavaScriptEnabled(true);
@@ -1112,8 +954,24 @@ public class InAppBrowser extends CordovaPlugin implements DownloadListener {
                 settings.setBuiltInZoomControls(showZoomControls);
                 settings.setPluginState(android.webkit.WebSettings.PluginState.ON);
 
+                // Add postMessage interface
+                class JsObject {
+                    @JavascriptInterface
+                    public void postMessage(String data) {
+                        try {
+                            JSONObject obj = new JSONObject();
+                            obj.put("type", MESSAGE_EVENT);
+                            obj.put("data", new JSONObject(data));
+                            sendUpdate(obj, true);
+                        } catch (JSONException ex) {
+                            LOG.e(LOG_TAG, "data object passed to postMessage has caused a JSON error.");
+                        }
+                    }
+                }
+
                 if(android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.JELLY_BEAN_MR1) {
                     settings.setMediaPlaybackRequiresUserGesture(mediaPlaybackRequiresUserGesture);
+                    inAppWebView.addJavascriptInterface(new JsObject(), "cordova_iab");
                 }
 
                 String overrideUserAgent = preferences.getString("OverrideUserAgent", null);
@@ -1146,8 +1004,6 @@ public class InAppBrowser extends CordovaPlugin implements DownloadListener {
                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
                     CookieManager.getInstance().setAcceptThirdPartyCookies(inAppWebView,true);
                 }
-
-                inAppWebView.setDownloadListener(InAppBrowser.this::onDownloadStart);
 
                 inAppWebView.loadUrl(url);
                 inAppWebView.setId(Integer.valueOf(6));
@@ -1261,46 +1117,26 @@ public class InAppBrowser extends CordovaPlugin implements DownloadListener {
         }
     }
 
-    @Override
-    public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimetype, long contentLength) {
-        if (allowedNavigations.isUrlWhiteListed(url)) {
-            JSONObject obj = new JSONObject();
-            try {
-                obj.put("type", ON_DOWNLOAD_HANDLER);
-                obj.put("url", url);
-                obj.put("userAgent", userAgent);
-                obj.put("contentDisposition", contentDisposition);
-                obj.put("mimetype", mimetype);
-                obj.put("contentLength", contentLength);
-                sendUpdate(obj, true);
-            } catch (JSONException e) {
-                e.printStackTrace();
-            }
-        }
-    }
-
     /**
      * The webview client receives notifications about appView
      */
     public class InAppBrowserClient extends WebViewClient {
         EditText edittext;
         CordovaWebView webView;
+        boolean useBeforeload;
+        boolean waitForBeforeload;
 
-//        public void onReceivedSslError(WebView view,
-//                                       SslErrorHandler handler, SslError error) {
-//            Log.e("Error", "Received SSL error"+ error.toString());
-//            handler.proceed();
-//        }
- 
         /**
          * Constructor.
          *
          * @param webView
          * @param mEditText
          */
-        public InAppBrowserClient(CordovaWebView webView, EditText mEditText) {
+        public InAppBrowserClient(CordovaWebView webView, EditText mEditText, boolean useBeforeload) {
             this.webView = webView;
             this.edittext = mEditText;
+            this.useBeforeload = useBeforeload;
+            this.waitForBeforeload = useBeforeload;
         }
 
         /**
@@ -1313,45 +1149,27 @@ public class InAppBrowser extends CordovaPlugin implements DownloadListener {
          */
         @Override
         public boolean shouldOverrideUrlLoading(WebView webView, String url) {
-            if (url.startsWith(SCHEME_API)) { //V2
-                int posInit = SCHEME_API.length();
-                if (posInit != -1 && posInit+1 < url.length()) {
-                    String jsonArray = url.substring(posInit);
-                    try {
-                        JSONArray arr = new JSONArray(jsonArray);
-                        if (arr != null && arr.length() > 0) {
-                            for (int i=0; i<arr.length(); i++) {
-                                JSONObject objIn = arr.getJSONObject(i);
+            boolean override = false;
 
-                                JSONObject objToSend = new JSONObject();
-                                objToSend.put("type", ON_WEB_MESSAGE_V2);
-                                objToSend.put("msg", objIn.toString());
-                                sendUpdate(objToSend, true);
-                            }
-                        }
-                    } catch (JSONException ex) {
-                        LOG.d(LOG_TAG, "Should never happen");
-                    } finally {
-                        InAppBrowser.this.cordova.getActivity().runOnUiThread(
-                            new Runnable() {
-                                @SuppressLint("NewApi")
-                                @Override
-                                public void run() {
-                                    String jsCall = "window.internapApi.seendMessagePostFeedback();";
-                                    inAppWebView.evaluateJavascript(jsCall, value -> {
-                                        LOG.d(LOG_TAG, "internal api feedback: "+value);
-                                    });
-                                }
-                            });
-                    }
+            // On first URL change, initiate JS callback. Only after the beforeload event, continue.
+            if (this.waitForBeforeload) {
+                try {
+                    JSONObject obj = new JSONObject();
+                    obj.put("type", "beforeload");
+                    obj.put("url", url);
+                    sendUpdate(obj, true);
+                    return true;
+                } catch (JSONException ex) {
+                    LOG.e(LOG_TAG, "URI passed in has caused a JSON error.");
                 }
-                return true;
-            } else if (url.startsWith(WebView.SCHEME_TEL)) {
+            }
+
+            if (url.startsWith(WebView.SCHEME_TEL)) {
                 try {
                     Intent intent = new Intent(Intent.ACTION_DIAL);
                     intent.setData(Uri.parse(url));
                     cordova.getActivity().startActivity(intent);
-                    return true;
+                    override = true;
                 } catch (android.content.ActivityNotFoundException e) {
                     LOG.e(LOG_TAG, "Error dialing " + url + ": " + e.toString());
                 }
@@ -1360,7 +1178,7 @@ public class InAppBrowser extends CordovaPlugin implements DownloadListener {
                     Intent intent = new Intent(Intent.ACTION_VIEW);
                     intent.setData(Uri.parse(url));
                     cordova.getActivity().startActivity(intent);
-                    return true;
+                    override = true;
                 } catch (android.content.ActivityNotFoundException e) {
                     LOG.e(LOG_TAG, "Error with " + url + ": " + e.toString());
                 }
@@ -1391,16 +1209,18 @@ public class InAppBrowser extends CordovaPlugin implements DownloadListener {
                     intent.putExtra("address", address);
                     intent.setType("vnd.android-dir/mms-sms");
                     cordova.getActivity().startActivity(intent);
-                    return true;
+                    override = true;
                 } catch (android.content.ActivityNotFoundException e) {
                     LOG.e(LOG_TAG, "Error sending sms " + url + ":" + e.toString());
                 }
             }
             // Test for whitelisted custom scheme names like mycoolapp:// or twitteroauthresponse:// (Twitter Oauth Response)
-            else if (!url.startsWith("http:") && !url.startsWith("https:") && url.matches("^[a-z]*://.*?$")) {
+            else if (!url.startsWith("http:") && !url.startsWith("https:") && url.matches("^[A-Za-z0-9+.-]*://.*?$")) {
                 if (allowedSchemes == null) {
-                    String allowed = preferences.getString("AllowedSchemes", "");
-                    allowedSchemes = allowed.split(",");
+                    String allowed = preferences.getString("AllowedSchemes", null);
+                    if(allowed != null) {
+                        allowedSchemes = allowed.split(",");
+                    }
                 }
                 if (allowedSchemes != null) {
                     for (String scheme : allowedSchemes) {
@@ -1410,7 +1230,7 @@ public class InAppBrowser extends CordovaPlugin implements DownloadListener {
                                 obj.put("type", "customscheme");
                                 obj.put("url", url);
                                 sendUpdate(obj, true);
-                                return true;
+                                override = true;
                             } catch (JSONException ex) {
                                 LOG.e(LOG_TAG, "Custom Scheme URI passed in has caused a JSON error.");
                             }
@@ -1418,22 +1238,11 @@ public class InAppBrowser extends CordovaPlugin implements DownloadListener {
                     }
                 }
             }
-            else if (url.startsWith("http:") || url.startsWith("https:")) {
-                if (!allowedNavigations.isUrlWhiteListed(url)) {
-                    try {
-                        JSONObject obj = new JSONObject();
-                        obj.put("type", EXTERNAL_URI);
-                        obj.put("url", url);
-                        sendUpdate(obj, true);
-                    } catch (JSONException ex) {
-                        LOG.e(LOG_TAG, "External URI passed in has caused a JSON error.");
-                    }
-                    return true;
-                }
 
+            if (this.useBeforeload) {
+                this.waitForBeforeload = true;
             }
-
-            return false;
+            return override;
         }
 
 
@@ -1447,13 +1256,6 @@ public class InAppBrowser extends CordovaPlugin implements DownloadListener {
         @Override
         public void onPageStarted(WebView view, String url, Bitmap favicon) {
             super.onPageStarted(view, url, favicon);
-
-            //msgPortCordova = null;
-            //msgPortWebview = null;
-            //msgPendingToSend.clear();
-            //msgPendindToDispatch.clear();
-            //msgThreadDispatcher = null;
-
             String newloc = "";
             if (url.startsWith("http:") || url.startsWith("https:") || url.startsWith("file:")) {
                 newloc = url;
@@ -1485,6 +1287,11 @@ public class InAppBrowser extends CordovaPlugin implements DownloadListener {
 
         public void onPageFinished(WebView view, String url) {
             super.onPageFinished(view, url);
+
+            // Set the namespace for postMessage()
+            if (Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.JELLY_BEAN_MR1){
+                injectDeferredObject("window.webkit={messageHandlers:{cordova_iab:cordova_iab}}", null);
+            }
 
             // CB-10395 InAppBrowser's WebView not storing cookies reliable to local device storage
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {

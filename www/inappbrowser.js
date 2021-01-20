@@ -33,23 +33,29 @@
 
     function InAppBrowser () {
         this.channels = {
+            'beforeload': channel.create('beforeload'),
             'loadstart': channel.create('loadstart'),
             'loadstop': channel.create('loadstop'),
             'loaderror': channel.create('loaderror'),
             'exit': channel.create('exit'),
             'customscheme': channel.create('customscheme'),
-            'onwebmessage': channel.create('onwebmessage'),
-            'onwebmessageV2': channel.create('onwebmessageV2'),
-            'downloadhandler': channel.create('downloadhandler'),
-            'externaluri': channel.create('externaluri')
+            'message': channel.create('message')
         };
     }
 
     InAppBrowser.prototype = {
         _eventHandler: function (event) {
             if (event && (event.type in this.channels)) {
-                this.channels[event.type].fire(event);
+                if (event.type === 'beforeload') {
+                    this.channels[event.type].fire(event, this._loadAfterBeforeload);
+                } else {
+                    this.channels[event.type].fire(event);
+                }
             }
+        },
+        _loadAfterBeforeload: function (strUrl) {
+            strUrl = urlutil.makeAbsolute(strUrl);
+            exec(null, null, 'InAppBrowser', 'loadAfterBeforeload', [strUrl]);
         },
         close: function (eventname) {
             exec(null, null, 'InAppBrowser', 'close', []);
@@ -69,28 +75,6 @@
             if (eventname in this.channels) {
                 this.channels[eventname].unsubscribe(f);
             }
-        },
-        createChannel: function(tag, successCallback, errorCallback) {
-            exec(successCallback, errorCallback, 'InAppBrowser', 'createChannel', [tag])
-        },
-        postMessage: function(json, successCallback, errorCallback) {
-            var params = [];
-            if (json != undefined) {
-                var jsonStr = JSON.stringify(json);
-                params = [jsonStr];
-            }
-            exec(successCallback, errorCallback, 'InAppBrowser', 'postMessage', params)
-        },
-        createChannelV2: function(successCallback, errorCallback) {
-            exec(successCallback, errorCallback, 'InAppBrowser', 'createChannelV2', [])
-        },
-        postMessageV2: function(json, successCallback, errorCallback) {
-            var params = [];
-            if (json != undefined) {
-                var jsonStr = JSON.stringify(json);
-                params = [jsonStr];
-            }
-            exec(successCallback, errorCallback, 'InAppBrowser', 'postMessageV2', params)
         },
 
         executeScript: function (injectDetails, cb) {
